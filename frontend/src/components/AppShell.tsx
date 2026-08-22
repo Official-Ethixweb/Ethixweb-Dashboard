@@ -5,6 +5,7 @@ import { LogOut } from "lucide-react";
 import { useAuth } from "@/context/AuthContext";
 import { useLive } from "@/context/LiveContext";
 import { useNotifications } from "@/hooks/useData";
+import { usePendingApprovalCount } from "@/hooks/useApprovals";
 import { ThemeSwitch } from "@/components/ThemeSwitch";
 import { LiveIndicator } from "@/components/LiveIndicator";
 import { BottomTabs } from "@/components/mobile/BottomTabs";
@@ -30,13 +31,39 @@ export function AppShell({ children }: { children: ReactNode }) {
   const mainRef = useRef<HTMLElement>(null);
 
   const unread = notifications?.filter((n) => !n.read).length ?? 0;
+  const pendingApprovals = usePendingApprovalCount();
   const nav = useMemo(() => navFor(user), [user]);
   const client = isClientNav(user);
 
   const secondary = useMemo(
     () =>
-      nav.secondary.map((i) => (i.to === "/portal/notifications" ? { ...i, badge: unread } : i)),
-    [nav.secondary, unread],
+      nav.secondary.map((i) => {
+        if (i.to === "/portal/notifications") return { ...i, badge: unread };
+        // A proposal nobody looks at is the failure mode this whole feature has,
+        // so the count sits in the navigation rather than only on the page.
+        if (i.to === "/portal/approvals") return { ...i, badge: pendingApprovals };
+        return i;
+      }),
+    [nav.secondary, unread, pendingApprovals],
+  );
+
+  // Staff read the grouped sidebar rather than `secondary`, so the counts have
+  // to be threaded through the groups too or the badge is invisible to exactly
+  // the people who need it.
+  const badgeFor = (to: string) =>
+    to === "/portal/notifications" ? unread : to === "/portal/approvals" ? pendingApprovals : undefined;
+
+  const groups = useMemo(
+    () =>
+      nav.groups.map((g) => ({
+        ...g,
+        items: g.items.map((i) => {
+          const badge = badgeFor(i.to);
+          return badge == null ? i : { ...i, badge };
+        }),
+      })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [nav.groups, unread, pendingApprovals],
   );
 
   const title = useMemo(
@@ -60,7 +87,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       </a>
 
       <aside className="sticky top-0 hidden h-svh w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex">
-        <SidebarContent primary={nav.primary} secondary={secondary} groups={nav.groups} flat={client} />
+        <SidebarContent primary={nav.primary} secondary={secondary} groups={groups} flat={client} />
       </aside>
 
       <div className="relative flex min-w-0 flex-1 flex-col">
@@ -109,13 +136,35 @@ function titleFor(pathname: string, items: NavItem[]): string {
   return nested?.label ?? "EthixWeb";
 }
 
+/**
+ * The emblem on its plate, with the product name set beside it.
+ *
+ * The mark ships in two files -- greyscale and brand red -- and the plate holds
+ * both so hovering cross-fades between them at identical size. `ethixweb.png`,
+ * the flat wordmark, is deliberately not used here: it is a white mark on
+ * transparency and disappears against the light sidebar.
+ */
 function Brand() {
   return (
     <div className="flex min-w-0 items-center gap-2.5">
       <div
-        className="flex size-8 shrink-0 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950 p-1 shadow-sm ring-1 ring-primary/20"
+        className="group flex size-[2.1rem] shrink-0 items-center justify-center rounded-md border border-zinc-800 bg-zinc-950/40 p-1 shadow-sm ring-1 ring-primary/20 transition-colors duration-200 hover:border-primary/40 hover:ring-primary/40"
       >
-        <img src="/emblem-mark.png" alt="EthixWeb Emblem" className="size-full object-contain" />
+        {/* Both marks share one box, so the greyscale and red versions render
+            at exactly the same size; hovering cross-fades between them. */}
+        <div className="relative size-full">
+          <img
+            src="/emblem-mark.png"
+            alt="EthixWeb Emblem"
+            className="absolute inset-0 size-full object-contain transition-opacity duration-200 group-hover:opacity-0"
+          />
+          <img
+            src="/emblem-mark-red.png"
+            alt=""
+            aria-hidden="true"
+            className="absolute inset-0 size-full object-contain opacity-0 transition-opacity duration-200 group-hover:opacity-100"
+          />
+        </div>
       </div>
       <div className="min-w-0">
         <div className="truncate text-sm leading-tight font-semibold tracking-tight text-sidebar-foreground">
@@ -127,42 +176,86 @@ function Brand() {
   );
 }
 
+/**
+ * The icon language is lifted from ethixweb.com, which builds every icon
+ * affordance the same way: a lucide glyph at stroke-width 2 inside a fully
+ * rounded chip with a hairline white border and a blurred, saturated
+ * backdrop -- never a solid fill. The active row here IS that chip, so the
+ * sidebar and the marketing site read as one product.
+ *
+ * The glyph still sits in a fixed 28px cell so a wide icon and a narrow one
+ * occupy identical space and the labels stay on one optical line.
+ */
+const NAV_ICON_CELL = "relative grid size-7 shrink-0 place-items-center";
+
+function NavIcon({ icon: Icon, active }: { icon: NavItem["icon"]; active: boolean }) {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <motion.span
+      aria-hidden
+      className={NAV_ICON_CELL}
+      variants={reduceMotion ? undefined : { tap: { scale: 0.82 } }}
+      transition={{ type: "spring", stiffness: 520, damping: 20 }}
+    >
+      <motion.span
+        className="relative"
+        animate={reduceMotion || !active ? { scale: 1 } : { scale: [1, 1.18, 1] }}
+        transition={{ duration: 0.32, ease: "easeOut" }}
+      >
+        {/* Stroke 2 on every glyph, active or not -- the site never varies it;
+            selection is carried by the chip and the colour instead. */}
+        <Icon className="size-[1.05rem]" strokeWidth={2} />
+      </motion.span>
+    </motion.span>
+  );
+}
+
 function NavRow({ item }: { item: NavItem }) {
+  const reduceMotion = useReducedMotion();
+
   return (
     <NavLink
       to={item.to}
       end={item.to === "/portal"}
       className={({ isActive }) =>
         cn(
-          "focus-clear relative flex h-10 items-center gap-2.5 rounded-lg px-3 text-sm transition-colors",
+          "focus-clear relative flex h-10 items-center rounded-full px-3 text-sm transition-colors",
           isActive
-            ? "bg-primary/10 font-medium text-primary shadow-xs"
-            : "font-normal text-sidebar-foreground/80 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground",
+            ? "font-medium text-primary"
+            : "font-normal text-sidebar-foreground/80 hover:bg-sidebar-accent/40 hover:text-sidebar-foreground",
         )
       }
     >
       {({ isActive }) => (
-        <>
-          {isActive && <span aria-hidden className="absolute left-0 h-5 w-0.5 rounded-r-full bg-primary" />}
-          <item.icon aria-hidden className="size-4 shrink-0" />
-          <span className="min-w-0 flex-1 truncate">{item.label}</span>
+        <motion.span
+          className="flex w-full items-center gap-2.5"
+          whileTap={reduceMotion ? undefined : "tap"}
+        >
+          {isActive && (
+            <motion.span
+              aria-hidden
+              layoutId="nav-active-chip"
+              // Tinted from --primary rather than --accent: in the light theme
+              // --accent is near-white, so the chip vanished against the
+              // sidebar. A wash of the brand red reads on both grounds.
+              className="absolute inset-0 rounded-full border border-primary/25 bg-primary/12 backdrop-blur-md backdrop-saturate-150"
+              transition={{ type: "spring", stiffness: 420, damping: 34 }}
+            />
+          )}
+          <NavIcon icon={item.icon} active={isActive} />
+          <span className="relative min-w-0 flex-1 truncate">{item.label}</span>
           {item.badge != null && item.badge > 0 && (
-            <span className="shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
+            <span className="relative shrink-0 rounded-full bg-primary px-1.5 text-[10px] font-semibold text-primary-foreground">
               {item.badge > 9 ? "9+" : item.badge}
             </span>
           )}
-        </>
+        </motion.span>
       )}
     </NavLink>
   );
 }
 
-/**
- * Two sidebars in one component, because they differ only in how much index
- * they need. Staff get headed groups over the whole workspace; a client gets a
- * flat, unlabelled list -- four places they go, then everything else, with no
- * section headings to read past.
- */
 function SidebarContent({
   primary,
   secondary,
@@ -187,7 +280,10 @@ function SidebarContent({
         />
       </div>
 
-      <div className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border/60 px-4">
+      {/* 22px, not 16: the nav rows below inset by px-2.5 + px-3 and the
+          account block by p-3 + px-2.5, both landing on 22. The emblem starts
+          on that same line rather than six pixels to its left. */}
+      <div className="relative z-10 flex h-14 shrink-0 items-center justify-between border-b border-sidebar-border/60 px-[22px]">
         <Brand />
       </div>
 
@@ -213,7 +309,7 @@ function SidebarContent({
         ) : (
           groups.map((group) => (
             <div key={group.heading} className="mb-4 last:mb-0">
-              <div className="px-3 pb-1.5 text-xs font-medium tracking-wide text-muted-foreground uppercase">
+              <div className="px-3 pb-1.5 t-label text-muted-foreground">
                 {group.heading}
               </div>
               <div className="space-y-0.5">
@@ -228,7 +324,7 @@ function SidebarContent({
 
       <div className="relative z-10 shrink-0 border-t border-sidebar-border/60 px-4 py-3">
         <div className="flex items-center justify-between pb-1.5">
-          <span className="text-xs font-medium tracking-wide text-muted-foreground uppercase">Appearance</span>
+          <span className="t-label text-muted-foreground">Appearance</span>
           <LiveIndicator />
         </div>
         <ThemeSwitch />
